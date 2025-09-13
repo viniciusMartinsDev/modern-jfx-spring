@@ -1,0 +1,167 @@
+name: CD - Continuous Delivery
+
+on:
+  push:
+    branches: [ main ]
+  workflow_run:
+    workflows: ["CI - Continuous Integration"]
+    types:
+      - completed
+    branches: [ main ]
+
+jobs:
+  build-and-package:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'push' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Cache Maven packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2
+
+      - name: Build application
+        run: ./mvnw clean package -DskipTests
+
+      - name: Upload JAR artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: spring-boot-app
+          path: target/*.jar
+
+  docker-build:
+    needs: build-and-package
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download JAR artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: spring-boot-app
+          path: target/
+
+      - name: Create Dockerfile
+        run: |
+          cat > Dockerfile << 'EOF'
+          FROM openjdk:21-jdk-slim
+          
+          WORKDIR /app
+          
+          COPY target/*.jar app.jar
+          
+          EXPOSE 8080
+          
+          ENTRYPOINT ["java", "-jar", "app.jar"]
+          EOF
+
+      - name: Build Docker image
+        run: |
+          docker build -t modern-jfx-spring:latest .
+          docker tag modern-jfx-spring:latest modern-jfx-spring:${{ github.sha }}
+
+      - name: Test Docker image with compose
+        run: |
+          # Create .env file for testing
+          echo "POSTGRES_DB=modern_jfx_db" > .env
+          echo "POSTGRES_USER=app_user" >> .env
+          echo "POSTGRES_PASSWORD=secure_password" >> .env
+          
+          # Create docker-compose for testing
+          cat > docker-compose.test.yml << 'EOF'
+          services:
+            postgres:
+              image: postgres:15
+              environment:
+                POSTGRES_DB: ${POSTGRES_DB}
+                POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+                POSTGRES_USER: ${POSTGRES_USER}
+              ports:
+                - "5432:5432"
+          
+            app:
+              image: modern-jfx-spring:latest
+              depends_on:
+                - postgres
+              environment:
+                POSTGRES_DB: ${POSTGRES_DB}
+                POSTGRES_USER: ${POSTGRES_USER}
+                POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+              ports:
+                - "8080:8080"
+          EOF
+          
+          # Start services
+          docker-compose -f docker-compose.test.yml up -d postgres
+          sleep 10
+          
+          # Test database connection with our app
+          docker-compose -f docker-compose.test.yml up --abort-on-container-exit app > docker-test.log 2>&1
+          
+          # Check if connection was successful
+          if grep -q "✅ Conexão com o banco de dados estabelecida com sucesso!" docker-test.log; then
+            echo "✅ Docker integration test passed!"
+          else
+            echo "❌ Docker integration test failed!"
+            cat docker-test.log
+            exit 1
+          fi
+          
+          # Cleanup
+          docker-compose -f docker-compose.test.yml down -v
+
+      - name: Save Docker image
+        run: |
+          docker save modern-jfx-spring:latest > modern-jfx-spring.tar
+
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: docker-image
+          path: modern-jfx-spring.tar
+
+  release:
+    needs: [build-and-package, docker-build]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v3
+
+      - name: Create Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ github.run_number }}
+          release_name: Release v${{ github.run_number }}
+          body: |
+            🚀 **Automated Release v${{ github.run_number }}**
+            
+            **Changes:**
+            - Built from commit: ${{ github.sha }}
+            - Includes Spring Boot JAR and Docker image
+            - Database connection verified ✅
+            
+            **Artifacts:**
+            - `spring-boot-app`: Ready-to-run JAR file
+            - `docker-image`: Docker image for containerized deployment
+          draft: false
+          prerelease: false

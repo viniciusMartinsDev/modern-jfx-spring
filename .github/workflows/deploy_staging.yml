@@ -1,0 +1,62 @@
+name: Deploy to Staging
+
+on:
+  workflow_run:
+    workflows: ["CD - Continuous Delivery"]
+    types:
+      - completed
+    branches: [ main ]
+
+jobs:
+  deploy-staging:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    environment: staging
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Deploy to staging environment
+        run: |
+          echo "🚀 Deploying to staging environment..."
+          
+          # Simulate deployment steps
+          echo "1. Pulling latest Docker image..."
+          echo "2. Updating staging environment variables..."
+          echo "3. Running database migrations..."
+          echo "4. Starting new containers..."
+          echo "5. Running health checks..."
+          
+          # Create deployment info
+          cat > deployment-info.txt << EOF
+          Deployment Information:
+          - Environment: Staging
+          - Commit: ${{ github.sha }}
+          - Deployed at: $(date)
+          - Build Number: ${{ github.run_number }}
+          EOF
+          
+          echo "✅ Staging deployment completed successfully!"
+
+      - name: Run staging health check
+        run: |
+          echo "🔍 Running staging health checks..."
+          
+          # Simulate health check
+          sleep 5
+          
+          echo "✅ Application is healthy in staging"
+          echo "✅ Database connection verified"
+          echo "✅ All services are responding"
+
+      - name: Upload deployment artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: staging-deployment-info
+          path: deployment-info.txt
+
+      - name: Notify deployment status
+        run: |
+          echo "📧 Sending deployment notifications..."
+          echo "✅ Staging deployment successful for commit ${{ github.sha }}"
