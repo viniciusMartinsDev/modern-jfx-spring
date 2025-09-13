@@ -9,7 +9,11 @@ import org.springframework.stereotype.Component;
 public class DatabaseConnectionLogger implements CommandLineRunner {
 
     @Autowired
-    private JdbcTemplate jdbcTemplate;
+    private final JdbcTemplate jdbcTemplate;
+
+    public DatabaseConnectionLogger(JdbcTemplate jdbcTemplate) {
+        this.jdbcTemplate = jdbcTemplate;
+    }
 
     @Override
     public void run(String... args){
