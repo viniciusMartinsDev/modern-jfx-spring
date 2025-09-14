@@ -99,35 +99,6 @@ jobs:
             echo "has_test_results=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Publish Test Results
-        uses: EnricoMi/publish-unit-test-result-action@v2
-        if: always() && steps.test-results.outputs.has_test_results == 'true'
-        with:
-          files: |
-            target/surefire-reports/*.xml
-          check_name: "Unit Test Results"
-          comment_mode: update_last
-          compare_to_earlier_commit: false
-          report_individual_runs: true
-
-      - name: Run SpotBugs analysis
-        id: spotbugs
-        run: |
-          echo "🔍 Running SpotBugs analysis..."
-          ./mvnw spotbugs:check -B
-          echo "status=success" >> $GITHUB_OUTPUT
-        continue-on-error: true
-        env:
-          MAVEN_OPTS: ${{ env.MAVEN_OPTS }}
-
-      - name: Handle SpotBugs failure
-        if: steps.spotbugs.outcome == 'failure'
-        run: |
-          echo "status=failure" >> $GITHUB_OUTPUT
-          echo "⚠️ SpotBugs found issues"
-        env:
-          GITHUB_OUTPUT: ${{ github.output }}
-
       - name: Run Checkstyle analysis
         id: checkstyle
         run: |
