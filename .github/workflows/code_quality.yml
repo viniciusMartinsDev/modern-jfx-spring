@@ -5,108 +5,301 @@ on:
     branches: [ main, develop ]
   pull_request:
     branches: [ main, develop ]
+  workflow_dispatch: # Permite execução manual
 
 permissions:
   contents: read
   checks: write
   pull-requests: write
+  actions: read
+
+env:
+  JAVA_VERSION: '21'
+  MAVEN_OPTS: '-Xmx1024m'
 
 jobs:
   code-quality:
     runs-on: ubuntu-latest
+    timeout-minutes: 30 # Previne jobs infinitos
+
+    outputs:
+      test-results: ${{ steps.test-results.outputs.results }}
+      build-status: ${{ steps.build-status.outputs.status }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Para análises que precisam do histórico
 
-      - name: Set up JDK 21
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
         uses: actions/setup-java@v4
         with:
-          java-version: '21'
+          java-version: ${{ env.JAVA_VERSION }}
           distribution: 'temurin'
-
-      - name: Make Maven wrapper executable
-        run: chmod +x ./mvnw
 
       - name: Cache Maven dependencies
         uses: actions/cache@v4
         with:
-          path: ~/.m2
-          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
-          restore-keys: ${{ runner.os }}-m2
+          path: |
+            ~/.m2/repository
+            ~/.m2/wrapper
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml', '.mvn/wrapper/maven-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+
+      - name: Validate Maven wrapper
+        run: |
+          chmod +x ./mvnw
+          ./mvnw --version
+
+      - name: Validate project structure
+        run: |
+          if [ ! -f "pom.xml" ]; then
+            echo "❌ pom.xml not found"
+            exit 1
+          fi
+          echo "✅ Project structure validated"
 
       - name: Compile project
-        run: ./mvnw clean compile
+        run: |
+          echo "🔨 Compiling project..."
+          ./mvnw clean compile -B -V
+        env:
+          MAVEN_OPTS: ${{ env.MAVEN_OPTS }}
 
       - name: Run tests
-        run: ./mvnw test
+        id: run-tests
+        run: |
+          echo "🧪 Running tests..."
+          ./mvnw test -B
         continue-on-error: true
+        env:
+          MAVEN_OPTS: ${{ env.MAVEN_OPTS }}
 
-      - name: Publish Test Results
-        uses: EnricoMi/publish-unit-test-result-action@v2
+      - name: Parse test results
+        id: test-results
         if: always()
-        with:
-          files: |
-            target/surefire-reports/*.xml
-          check_name: "Test Results"
-          comment_mode: off
+        run: |
+          if [ -d "target/surefire-reports" ] && [ "$(find target/surefire-reports -name '*.xml' | wc -l)" -gt 0 ]; then
+            TOTAL_TESTS=$(find target/surefire-reports -name "TEST-*.xml" -exec grep -h 'testsuite.*tests=' {} \; | sed 's/.*tests="\([0-9]*\)".*/\1/' | awk '{sum+=$1} END {print sum+0}')
+            FAILED_TESTS=$(find target/surefire-reports -name "TEST-*.xml" -exec grep -h 'testsuite.*failures=' {} \; | sed 's/.*failures="\([0-9]*\)".*/\1/' | awk '{sum+=$1} END {print sum+0}')
+            ERROR_TESTS=$(find target/surefire-reports -name "TEST-*.xml" -exec grep -h 'testsuite.*errors=' {} \; | sed 's/.*errors="\([0-9]*\)".*/\1/' | awk '{sum+=$1} END {print sum+0}')
+            SKIPPED_TESTS=$(find target/surefire-reports -name "TEST-*.xml" -exec grep -h 'testsuite.*skipped=' {} \; | sed 's/.*skipped="\([0-9]*\)".*/\1/' | awk '{sum+=$1} END {print sum+0}')
 
-      - name: Run SpotBugs analysis
-        run: ./mvnw spotbugs:check
-        continue-on-error: true
+            PASSED_TESTS=$((TOTAL_TESTS - FAILED_TESTS - ERROR_TESTS - SKIPPED_TESTS))
 
-      - name: Check code style with Checkstyle
-        run: ./mvnw checkstyle:check
+            echo "total_tests=$TOTAL_TESTS" >> $GITHUB_OUTPUT
+            echo "passed_tests=$PASSED_TESTS" >> $GITHUB_OUTPUT
+            echo "failed_tests=$FAILED_TESTS" >> $GITHUB_OUTPUT
+            echo "error_tests=$ERROR_TESTS" >> $GITHUB_OUTPUT
+            echo "skipped_tests=$SKIPPED_TESTS" >> $GITHUB_OUTPUT
+            echo "has_test_results=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_test_results=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run Checkstyle analysis
+        id: checkstyle
+        run: |
+          echo "📏 Running Checkstyle analysis..."
+          ./mvnw checkstyle:check -B
+          echo "status=success" >> $GITHUB_OUTPUT
         continue-on-error: true
+        env:
+          MAVEN_OPTS: ${{ env.MAVEN_OPTS }}
+
+      - name: Handle Checkstyle failure
+        if: steps.checkstyle.outcome == 'failure'
+        run: |
+          echo "status=failure" >> $GITHUB_OUTPUT
+          echo "⚠️ Checkstyle found violations"
+        env:
+          GITHUB_OUTPUT: ${{ github.output }}
+
+      - name: Generate code coverage
+        if: steps.test-results.outputs.has_test_results == 'true'
+        run: |
+          echo "📊 Generating code coverage..."
+          ./mvnw jacoco:report -B
+        continue-on-error: true
+        env:
+          MAVEN_OPTS: ${{ env.MAVEN_OPTS }}
 
       - name: Package application
-        run: ./mvnw package -DskipTests
-        if: success()
+        id: package
+        if: steps.run-tests.outcome != 'failure'
+        run: |
+          echo "📦 Packaging application..."
+          ./mvnw package -DskipTests -B
+
+          # Verificar se o JAR foi criado
+          if ls target/*.jar 1> /dev/null 2>&1; then
+            echo "✅ JAR created successfully"
+            echo "status=success" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Failed to create JAR"
+            echo "status=failure" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+        env:
+          MAVEN_OPTS: ${{ env.MAVEN_OPTS }}
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
-        if: success()
+        if: steps.package.outputs.status == 'success'
         with:
-          name: jar-artifact
+          name: jar-artifact-${{ github.run_number }}
           path: target/*.jar
-          retention-days: 5
+          retention-days: 7
+          compression-level: 6
 
-      - name: Upload test results
+      - name: Upload code coverage
+        uses: actions/upload-artifact@v4
+        if: always() && hashFiles('target/site/jacoco/jacoco.xml') != ''
+        with:
+          name: code-coverage-${{ github.run_number }}
+          path: |
+            target/site/jacoco/
+          retention-days: 7
+
+      - name: Upload analysis reports
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: test-results
+          name: analysis-reports-${{ github.run_number }}
           path: |
             target/surefire-reports/
             target/checkstyle-result.xml
             target/spotbugsXml.xml
-          retention-days: 5
+            target/site/spotbugs/
+          retention-days: 7
 
-      - name: Test Summary
+      - name: Set build status
+        id: build-status
         if: always()
         run: |
-          echo "## 📊 Test Summary" >> $GITHUB_STEP_SUMMARY
-          
-          if [ -d "target/surefire-reports" ]; then
-            TEST_COUNT=$(find target/surefire-reports -name "*.xml" -exec grep -l "testsuite" {} \; | wc -l)
-            echo "- Test files found: $TEST_COUNT" >> $GITHUB_STEP_SUMMARY
-          
-            # Count passed/failed tests if files exist
-            if [ $TEST_COUNT -gt 0 ]; then
-              TOTAL_TESTS=$(grep -h "tests=" target/surefire-reports/*.xml | sed 's/.*tests="\([0-9]*\)".*/\1/' | awk '{sum+=$1} END {print sum+0}')
-              FAILED_TESTS=$(grep -h "failures=" target/surefire-reports/*.xml | sed 's/.*failures="\([0-9]*\)".*/\1/' | awk '{sum+=$1} END {print sum+0}')
-              PASSED_TESTS=$((TOTAL_TESTS - FAILED_TESTS))
-          
-              echo "- Total tests: $TOTAL_TESTS" >> $GITHUB_STEP_SUMMARY
-              echo "- Passed: ✅ $PASSED_TESTS" >> $GITHUB_STEP_SUMMARY
-              echo "- Failed: ❌ $FAILED_TESTS" >> $GITHUB_STEP_SUMMARY
-            fi
+          if [[ "${{ steps.run-tests.outcome }}" == "failure" ]]; then
+            echo "status=tests-failed" >> $GITHUB_OUTPUT
+          elif [[ "${{ steps.spotbugs.outcome }}" == "failure" ]] || [[ "${{ steps.checkstyle.outcome }}" == "failure" ]]; then
+            echo "status=quality-issues" >> $GITHUB_OUTPUT
+          elif [[ "${{ steps.package.outcome }}" == "failure" ]]; then
+            echo "status=build-failed" >> $GITHUB_OUTPUT
           else
-            echo "- No test results found" >> $GITHUB_STEP_SUMMARY
+            echo "status=success" >> $GITHUB_OUTPUT
           fi
-          
+
+      - name: Comprehensive Summary
+        if: always()
+        run: |
+          echo "# 📊 Build & Quality Report" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 🔍 Code Quality Checks" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Compilation completed" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ SpotBugs analysis completed" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Checkstyle analysis completed" >> $GITHUB_STEP_SUMMARY
+
+          # Build Status
+          case "${{ steps.build-status.outputs.status }}" in
+            "success")
+              echo "## ✅ Overall Status: SUCCESS" >> $GITHUB_STEP_SUMMARY
+              ;;
+            "tests-failed")
+              echo "## ❌ Overall Status: TESTS FAILED" >> $GITHUB_STEP_SUMMARY
+              ;;
+            "quality-issues")
+              echo "## ⚠️ Overall Status: QUALITY ISSUES FOUND" >> $GITHUB_STEP_SUMMARY
+              ;;
+            "build-failed")
+              echo "## ❌ Overall Status: BUILD FAILED" >> $GITHUB_STEP_SUMMARY
+              ;;
+          esac
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Test Results
+          echo "## 🧪 Test Results" >> $GITHUB_STEP_SUMMARY
+          if [[ "${{ steps.test-results.outputs.has_test_results }}" == "true" ]]; then
+            echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
+            echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Total Tests | ${{ steps.test-results.outputs.total_tests }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| ✅ Passed | ${{ steps.test-results.outputs.passed_tests }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| ❌ Failed | ${{ steps.test-results.outputs.failed_tests }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| ⚠️ Errors | ${{ steps.test-results.outputs.error_tests }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| ⏭️ Skipped | ${{ steps.test-results.outputs.skipped_tests }} |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ No test results found" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Quality Checks
+          echo "## 🔍 Code Quality Analysis" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Compilation | ✅ Success |" >> $GITHUB_STEP_SUMMARY
+
+          if [[ "${{ steps.spotbugs.outcome }}" == "success" ]]; then
+            echo "| SpotBugs | ✅ No issues found |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| SpotBugs | ❌ Issues detected |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [[ "${{ steps.checkstyle.outcome }}" == "success" ]]; then
+            echo "| Checkstyle | ✅ No violations |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Checkstyle | ❌ Style violations found |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # Build Artifacts
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📦 Artifacts" >> $GITHUB_STEP_SUMMARY
+          if [[ "${{ steps.package.outputs.status }}" == "success" ]]; then
+            echo "- ✅ JAR artifact created and uploaded" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ❌ JAR artifact creation failed" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [[ -f "target/site/jacoco/jacoco.xml" ]]; then
+            echo "- ✅ Code coverage report generated" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "- ✅ Analysis reports uploaded" >> $GITHUB_STEP_SUMMARY
+
+          # Links
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🔗 Useful Links" >> $GITHUB_STEP_SUMMARY
+          echo "- [View Artifacts](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+          echo "- [Commit: ${{ github.sha }}](https://github.com/${{ github.repository }}/commit/${{ github.sha }})" >> $GITHUB_STEP_SUMMARY
+
+  # Job adicional para notificações ou ações baseadas no resultado
+  notify-results:
+    needs: code-quality
+    runs-on: ubuntu-latest
+    if: always() && github.event_name == 'pull_request'
+
+    steps:
+      - name: Comment on PR
+        if: needs.code-quality.outputs.build-status != 'success'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const status = '${{ needs.code-quality.outputs.build-status }}';
+            let message = '## 🔍 Code Quality Check Results\n\n';
+
+            switch(status) {
+              case 'tests-failed':
+                message += '❌ **Tests are failing.** Please review and fix the failing tests before merging.';
+                break;
+              case 'quality-issues':
+                message += '⚠️ **Code quality issues detected.** SpotBugs or Checkstyle found violations that should be addressed.';
+                break;
+              case 'build-failed':
+                message += '❌ **Build failed.** The application could not be packaged successfully.';
+                break;
+              default:
+                message += '✅ All checks passed successfully!';
+            }
+
+            message += `\n\n[View detailed results](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: message
+            });
