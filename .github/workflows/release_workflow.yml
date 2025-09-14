@@ -1,0 +1,108 @@
+name: Create Release
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      is_prerelease:
+        required: true
+        type: string
+      java_version:
+        required: true
+        type: string
+      maven_opts:
+        required: true
+        type: string
+      registry:
+        required: true
+        type: string
+      image_name:
+        required: true
+        type: string
+      run_number:
+        required: true
+        type: string
+    secrets:
+      github_token:
+        required: true
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*-${{ inputs.run_number }}"
+          merge-multiple: false
+
+      - name: Generate release notes
+        id: release-notes
+        run: |
+          cat > release-notes.md << EOF
+          ## 🚀 Release ${{ inputs.version }}
+
+          **Build:** #${{ inputs.run_number }}
+          **Commit:** ${{ github.sha }}
+          **Date:** $(date +'%Y-%m-%d %H:%M:%S UTC')
+          **Environment:** ${{ inputs.environment || 'auto' }}
+
+          ### 📦 What's Included
+
+          - ☕ **Java Application** - Standalone JAR executable
+          - 📁 **Complete Package** - Ready-to-run distribution with scripts
+          - 🐳 **Docker Image** - Multi-architecture container image
+          - 🔐 **Checksums** - SHA256 verification files
+
+          ### 🛠️ System Requirements
+
+          - Java ${{ inputs.java_version }}+ required
+          - PostgreSQL (optional with Docker)
+          - 2GB+ RAM recommended
+
+          ### 🚀 Quick Start
+
+          1. Download the ZIP/TAR package below
+          2. Extract and run: \`./bin/start.sh\` (Linux/macOS) or \`bin\\start.bat\` (Windows)
+          3. Or use Docker: \`docker pull ${{ inputs.registry }}/${{ inputs.image_name }}:${{ inputs.version }}\`
+
+          ### 📊 Build Information
+
+          - **Java Version:** ${{ inputs.java_version }}
+          - **Maven Opts:** ${{ inputs.maven_opts }}
+          - **Platform:** ubuntu-latest
+          - **Docker Platforms:** linux/amd64
+
+          ---
+
+          🔗 **Docker Image:** \`${{ inputs.registry }}/${{ inputs.image_name }}:${{ inputs.version }}\`
+          EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          name: "Release ${{ inputs.version }}"
+          body_path: release-notes.md
+          prerelease: ${{ fromJSON(inputs.is_prerelease) }}
+          make_latest: ${{ !fromJSON(inputs.is_prerelease) }}
+          files: |
+            distribution-zip-${{ inputs.run_number }}/*
+            distribution-tar-${{ inputs.run_number }}/*
+            checksums-${{ inputs.run_number }}/*
+            docker-image-${{ inputs.run_number }}/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.github_token }}
+
+      - name: Update Docker Hub description
+        if: success()
+        continue-on-error: true
+        run: |
+          echo "📝 Would update Docker Hub description here"
+          # Implementar se necessário

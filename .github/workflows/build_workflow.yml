@@ -1,0 +1,310 @@
+name: Build Application
+
+on:
+  workflow_call:
+    inputs:
+      java_version:
+        required: true
+        type: string
+      maven_opts:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+      run_number:
+        required: true
+        type: string
+    outputs:
+      artifact_names:
+        description: "Names of generated artifacts"
+        value: ${{ jobs.build.outputs.artifact_names }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    outputs:
+      artifact_names: ${{ steps.artifacts.outputs.names }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK ${{ inputs.java_version }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ inputs.java_version }}
+          distribution: 'temurin'
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.m2/wrapper
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml', '.mvn/wrapper/maven-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+
+      - name: Make Maven wrapper executable
+        run: chmod +x ./mvnw
+
+      - name: Validate project
+        run: |
+          echo "🔍 Validating project structure..."
+          ./mvnw validate -B
+
+          if [[ ! -f "pom.xml" ]]; then
+            echo "❌ pom.xml not found"
+            exit 1
+          fi
+
+          echo "✅ Project validation completed"
+
+      - name: Run tests with coverage
+        run: |
+          echo "🧪 Running tests with coverage..."
+          ./mvnw clean test jacoco:report -B
+        env:
+          MAVEN_OPTS: ${{ inputs.maven_opts }}
+
+      - name: Build application
+        run: |
+          echo "🔨 Building application..."
+          ./mvnw package -DskipTests -B
+
+          if [[ ! -f target/*.jar ]]; then
+            echo "❌ JAR file not created"
+            exit 1
+          fi
+
+          echo "✅ Application built successfully"
+        env:
+          MAVEN_OPTS: ${{ inputs.maven_opts }}
+
+      - name: Create enhanced distribution
+        run: |
+          echo "📦 Creating distribution package..."
+
+          # Criar estrutura de diretórios
+          mkdir -p dist/{bin,config,docs,docker}
+
+          # Copiar JAR
+          cp target/*.jar dist/bin/
+          JAR_NAME=$(ls target/*.jar | xargs basename)
+
+          # Criar arquivos de configuração
+          cp docker-compose.yml dist/docker/ 2>/dev/null || echo "docker-compose.yml not found, skipping"
+          cp .env.example dist/config/ 2>/dev/null || echo ".env.example not found, skipping"
+
+          # Scripts de inicialização melhorados
+          cat > dist/bin/start.sh << 'EOF'
+          #!/bin/bash
+          set -e
+
+          APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          JAR_FILE=$(find "$APP_DIR" -name "*.jar" | head -1)
+
+          if [[ -z "$JAR_FILE" ]]; then
+            echo "❌ JAR file not found in $APP_DIR"
+            exit 1
+          fi
+
+          echo "🚀 Starting Modern JFX Spring Application..."
+          echo "📁 JAR: $(basename "$JAR_FILE")"
+          echo "📋 Java Version: $(java -version 2>&1 | head -1)"
+
+          # Configurar variáveis de ambiente se existir arquivo .env
+          if [[ -f "../config/.env" ]]; then
+            echo "📄 Loading environment variables..."
+            set -a
+            source ../config/.env
+            set +a
+          fi
+
+          # Iniciar aplicação
+          java -jar "$JAR_FILE" "$@"
+          EOF
+
+          cat > dist/bin/start.bat << 'EOF'
+          @echo off
+          setlocal enabledelayedexpansion
+
+          echo Starting Modern JFX Spring Application...
+
+          for %%f in (*.jar) do (
+            set JAR_FILE=%%f
+            goto :found
+          )
+
+          echo JAR file not found!
+          exit /b 1
+
+          :found
+          echo JAR: !JAR_FILE!
+          java -jar !JAR_FILE! %*
+          EOF
+
+          chmod +x dist/bin/start.sh
+
+          # Documentação aprimorada
+          cat > dist/README.md << EOF
+          # Modern JFX Spring Application
+
+          **Version:** ${{ inputs.version }}
+          **Build:** #${{ inputs.run_number }}
+          **Commit:** ${{ github.sha }}
+          **Date:** $(date +'%Y-%m-%d %H:%M:%S')
+
+          ## 🚀 Quick Start
+
+          ### Prerequisites
+          - Java ${{ inputs.java_version }} or higher
+          - PostgreSQL (optional with Docker)
+
+          ### Running the Application
+
+          #### Linux/macOS:
+          \`\`\`bash
+          cd bin
+          ./start.sh
+          \`\`\`
+
+          #### Windows:
+          \`\`\`cmd
+          cd bin
+          start.bat
+          \`\`\`
+
+          #### Manual execution:
+          \`\`\`bash
+          java -jar bin/*.jar
+          \`\`\`
+
+          ## 🐳 Docker Support
+
+          If docker-compose.yml is available:
+          \`\`\`bash
+          cd docker
+          docker-compose up -d
+          \`\`\`
+
+          ## ⚙️ Configuration
+
+          1. Copy \`config/.env.example\` to \`config/.env\`
+          2. Edit the configuration variables
+          3. Run the application
+
+          ## 📁 Directory Structure
+
+          \`\`\`
+          dist/
+          ├── bin/           # Executables and scripts
+          ├── config/        # Configuration files
+          ├── docs/          # Documentation
+          └── docker/        # Docker related files
+          \`\`\`
+
+          ## 🆘 Support
+
+          For issues and support, visit: [Repository](${{ github.server_url }}/${{ github.repository }})
+          EOF
+
+          # Changelog básico
+          cat > dist/CHANGELOG.md << EOF
+          # Changelog
+
+          ## [${{ inputs.version }}] - $(date +'%Y-%m-%d')
+
+          ### Added
+          - Automated build and release process
+          - Enhanced distribution package
+          - Multi-platform startup scripts
+
+          ### Technical Details
+          - Build: #${{ inputs.run_number }}
+          - Commit: ${{ github.sha }}
+          - Java Version: ${{ inputs.java_version }}
+          EOF
+
+          echo "✅ Distribution package created"
+
+      - name: Generate checksums
+        run: |
+          echo "🔐 Generating checksums..."
+          cd dist
+          find . -type f -name "*.jar" -o -name "*.sh" -o -name "*.bat" | xargs sha256sum > ../checksums.txt
+          cd ..
+          echo "✅ Checksums generated"
+
+      - name: Create distribution packages
+        id: packages
+        run: |
+          echo "📦 Creating distribution packages..."
+
+          VERSION="${{ inputs.version }}"
+          BASE_NAME="spring-boot-app-${VERSION#v}"
+
+          # ZIP package
+          cd dist
+          zip -r "../${BASE_NAME}.zip" . -x "*.DS_Store"
+          cd ..
+
+          # TAR.GZ package
+          tar -czf "${BASE_NAME}.tar.gz" -C dist .
+
+          # Incluir checksums nos pacotes
+          cp checksums.txt dist/
+
+          echo "zip_name=${BASE_NAME}.zip" >> $GITHUB_OUTPUT
+          echo "tar_name=${BASE_NAME}.tar.gz" >> $GITHUB_OUTPUT
+          echo "✅ Distribution packages created"
+
+      - name: Set artifact names
+        id: artifacts
+        run: |
+          SUFFIX="${{ inputs.run_number }}"
+          echo "names=jar-${SUFFIX},distribution-zip-${SUFFIX},distribution-tar-${SUFFIX},checksums-${SUFFIX}" >> $GITHUB_OUTPUT
+
+      - name: Upload JAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jar-${{ inputs.run_number }}
+          path: target/*.jar
+          retention-days: 30
+          compression-level: 6
+
+      - name: Upload ZIP distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: distribution-zip-${{ inputs.run_number }}
+          path: ${{ steps.packages.outputs.zip_name }}
+          retention-days: 30
+          compression-level: 6
+
+      - name: Upload TAR distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: distribution-tar-${{ inputs.run_number }}
+          path: ${{ steps.packages.outputs.tar_name }}
+          retention-days: 30
+          compression-level: 6
+
+      - name: Upload checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: checksums-${{ inputs.run_number }}
+          path: checksums.txt
+          retention-days: 30
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ inputs.run_number }}
+          path: |
+            target/surefire-reports/
+            target/site/jacoco/
+          retention-days: 7

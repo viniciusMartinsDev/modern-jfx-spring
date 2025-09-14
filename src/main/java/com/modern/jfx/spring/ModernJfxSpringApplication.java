@@ -8,7 +8,6 @@ public class ModernJfxSpringApplication {
 
 	public static void main(String[] args) {
 		SpringApplication.run(ModernJfxSpringApplication.class, args);
-		System.out.println("Application started");
 	}
 
 }

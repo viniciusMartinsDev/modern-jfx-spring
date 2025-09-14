@@ -1,0 +1,99 @@
+name: Determine Version
+
+on:
+  workflow_call:
+    inputs:
+      java_version:
+        required: true
+        type: string
+    outputs:
+      should_release:
+        description: "Whether a release should be created"
+        value: ${{ jobs.determine-version.outputs.should_release }}
+      version:
+        description: "The version to be released"
+        value: ${{ jobs.determine-version.outputs.version }}
+      is_prerelease:
+        description: "Whether this is a prerelease"
+        value: ${{ jobs.determine-version.outputs.is_prerelease }}
+
+jobs:
+  determine-version:
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.version.outputs.should_release }}
+      version: ${{ steps.version.outputs.version }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK ${{ inputs.java_version }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ inputs.java_version }}
+          distribution: 'temurin'
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.m2/wrapper
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml', '.mvn/wrapper/maven-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+
+      - name: Make Maven wrapper executable
+        run: chmod +x ./mvnw
+
+      - name: Determine version and release strategy
+        id: version
+        run: |
+          # Obter versão do projeto
+          PROJECT_VERSION=$(./mvnw help:evaluate -Dexpression=project.version -q -DforceStdout)
+
+          # Determinar se deve criar release
+          SHOULD_RELEASE="false"
+          IS_PRERELEASE="false"
+          VERSION=""
+
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then
+            # Release automático da main
+            VERSION="v$(date +'%Y.%m.%d')-build.${{ github.run_number }}"
+            SHOULD_RELEASE="true"
+            IS_PRERELEASE="false"
+          elif [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/develop" ]]; then
+            # Pre-release da develop
+            VERSION="v$(date +'%Y.%m.%d')-dev.${{ github.run_number }}"
+            SHOULD_RELEASE="true"
+            IS_PRERELEASE="true"
+          elif [[ "${{ github.ref_type }}" == "tag" ]]; then
+            # Release de tag
+            VERSION="${{ github.ref_name }}"
+            SHOULD_RELEASE="true"
+            IS_PRERELEASE="false"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.create_release }}" == "true" ]]; then
+            # Release manual
+            case "${{ inputs.release_type }}" in
+              "major") VERSION="v$(date +'%Y').0.0-manual.${{ github.run_number }}" ;;
+              "minor") VERSION="v$(date +'%Y.%m').0-manual.${{ github.run_number }}" ;;
+              "patch") VERSION="v$(date +'%Y.%m.%d')-manual.${{ github.run_number }}" ;;
+            esac
+            SHOULD_RELEASE="true"
+            IS_PRERELEASE="${{ inputs.environment == 'staging' }}"
+          fi
+
+          echo "project_version=$PROJECT_VERSION" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "should_release=$SHOULD_RELEASE" >> $GITHUB_OUTPUT
+          echo "is_prerelease=$IS_PRERELEASE" >> $GITHUB_OUTPUT
+
+          echo "📋 Version Information:"
+          echo "  Project Version: $PROJECT_VERSION"
+          echo "  Release Version: $VERSION"
+          echo "  Should Release: $SHOULD_RELEASE"
+          echo "  Is Prerelease: $IS_PRERELEASE"
