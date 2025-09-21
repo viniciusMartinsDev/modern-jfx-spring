@@ -1,24 +1,8 @@
 name: Build Application
 
 on:
-  workflow_call:
-    inputs:
-      java_version:
-        required: true
-        type: string
-      maven_opts:
-        required: true
-        type: string
-      version:
-        required: true
-        type: string
-      run_number:
-        required: true
-        type: string
-    outputs:
-      artifact_names:
-        description: "Names of generated artifacts"
-        value: ${{ jobs.build.outputs.artifact_names }}
+  pull_request:
+    branches: [main]
 
 jobs:
   build:
@@ -36,7 +20,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           java-version: ${{ inputs.java_version }}
-          distribution: 'temurin'
+          distribution: "temurin"
 
       - name: Cache Maven dependencies
         uses: actions/cache@v4

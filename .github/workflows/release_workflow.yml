@@ -1,32 +1,8 @@
 name: Create Release
 
 on:
-  workflow_call:
-    inputs:
-      version:
-        required: true
-        type: string
-      is_prerelease:
-        required: true
-        type: string
-      java_version:
-        required: true
-        type: string
-      maven_opts:
-        required: true
-        type: string
-      registry:
-        required: true
-        type: string
-      image_name:
-        required: true
-        type: string
-      run_number:
-        required: true
-        type: string
-    secrets:
-      github_token:
-        required: true
+  pull_request:
+    branches: [main]
 
 jobs:
   create-release:

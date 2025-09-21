@@ -1,35 +1,8 @@
 name: Build and Release
 
 on:
-  push:
-    branches: [main, develop]
-    tags: ["v*.*.*"]
   pull_request:
-    branches: [main, develop]
-  workflow_dispatch:
-    inputs:
-      create_release:
-        description: "Create a new release"
-        required: false
-        default: false
-        type: boolean
-      release_type:
-        description: "Release type"
-        required: false
-        default: "patch"
-        type: choice
-        options:
-          - patch
-          - minor
-          - major
-      environment:
-        description: "Target environment"
-        required: false
-        default: "staging"
-        type: choice
-        options:
-          - staging
-          - production
+    branches: [main]
 
 permissions:
   contents: write
@@ -37,8 +10,8 @@ permissions:
   actions: read
 
 env:
-  JAVA_VERSION: '21'
-  MAVEN_OPTS: '-Xmx2048m -XX:+UseG1GC'
+  JAVA_VERSION: "21"
+  MAVEN_OPTS: "-Xmx2048m -XX:+UseG1GC"
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
