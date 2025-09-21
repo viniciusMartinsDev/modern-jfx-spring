@@ -1,6 +1,7 @@
 package com.modern.jfx.spring.model;
 
 import jakarta.persistence.*;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 
 @Entity
 public class Nota {
@@ -12,6 +13,7 @@ public class Nota {
 
     @ManyToOne
     @JoinColumn(name = "usuario_id")
+    @JsonIgnore
     private Usuario usuario;
 
     // Getters e setters
