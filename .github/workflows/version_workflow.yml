@@ -1,21 +1,8 @@
 name: Determine Version
 
 on:
-  workflow_call:
-    inputs:
-      java_version:
-        required: true
-        type: string
-    outputs:
-      should_release:
-        description: "Whether a release should be created"
-        value: ${{ jobs.determine-version.outputs.should_release }}
-      version:
-        description: "The version to be released"
-        value: ${{ jobs.determine-version.outputs.version }}
-      is_prerelease:
-        description: "Whether this is a prerelease"
-        value: ${{ jobs.determine-version.outputs.is_prerelease }}
+  pull_request:
+    branches: [main]
 
 jobs:
   determine-version:
@@ -35,7 +22,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           java-version: ${{ inputs.java_version }}
-          distribution: 'temurin'
+          distribution: "temurin"
 
       - name: Cache Maven dependencies
         uses: actions/cache@v4
